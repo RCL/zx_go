@@ -344,14 +344,12 @@ func (c *Compositor) ComposeSpriteBorderRow(frameY int, dst []byte, isInBorderAr
 	}
 	var scan [FullWidth]byte
 	c.sprites.RenderScanline(frameY, scan[:], FullWidth)
+	covered := c.sprites.Covered()
 	for x := 0; x < FullWidth; x++ {
-		if !isInBorderArea(x) {
+		if !isInBorderArea(x) || !covered[x] {
 			continue
 		}
 		idx := scan[x]
-		if idx == 0 || idx == c.spriteTrans {
-			continue // uncovered sentinel or transparency index
-		}
 		r, g, b := spritePal.RGB(idx)
 		off := x * 4
 		dst[off+0], dst[off+1], dst[off+2], dst[off+3] = r, g, b, 0xFF
@@ -370,16 +368,26 @@ func New(pal *palette.Bank, l2 *layer2.Layer2) *Compositor {
 
 // SetSprites attaches the sprite engine. nil unhooks (compositor
 // falls back to Layer-2-over-ULA only).
-func (c *Compositor) SetSprites(s *sprite.Engine) { c.sprites = s }
+func (c *Compositor) SetSprites(s *sprite.Engine) {
+	c.sprites = s
+	if s != nil {
+		s.SetTransparent(c.spriteTrans)
+	}
+}
 
 // SetPrioritySource installs the LayerPriority reader. Without one
 // the compositor defaults to ModeSLU (Sprites over Layer 2 over ULA).
 func (c *Compositor) SetPrioritySource(p PrioritySource) { c.prioritySource = p }
 
-// SetSpriteTransparency installs the palette index treated as
+// SetSpriteTransparency installs the pattern value NextReg $4B names as
 // transparent for the sprite layer (NextReg 0x4B). Defaults to
 // DefaultTransparency ($E3, the FPGA reset value).
-func (c *Compositor) SetSpriteTransparency(idx byte) { c.spriteTrans = idx }
+func (c *Compositor) SetSpriteTransparency(idx byte) {
+	c.spriteTrans = idx
+	if c.sprites != nil {
+		c.sprites.SetTransparent(idx)
+	}
+}
 
 // SetBlendMode installs NextReg 0x68 bits 6:5, which choose WHICH layer
 // supplies the colour summed with Layer 2 in the two blend orderings
@@ -562,6 +570,7 @@ func (c *Compositor) ComposeScanlineRange(y int, ulaRGBA []byte, dst []byte, x0,
 		}
 	}
 	var spriteScan []byte
+	var spriteCovered []bool
 	var spritePal *palette.Palette
 	if doSprites {
 		spritePal = c.pal.PaletteForLayer(palette.LayerSprites)
@@ -579,6 +588,7 @@ func (c *Compositor) ComposeScanlineRange(y int, ulaRGBA []byte, dst []byte, x0,
 			// rendered full-width so frame X (incl. the 32px paper offset) is
 			// available; paintSprites reads [paperX+BorderOffsetX].
 			c.sprites.RenderScanline(y+SpriteFrameYTop, spriteScan, FullWidth)
+			spriteCovered = c.sprites.Covered()
 		}
 	}
 
@@ -669,11 +679,11 @@ func (c *Compositor) ComposeScanlineRange(y int, ulaRGBA []byte, dst []byte, x0,
 			return
 		}
 		// x is the paper pixel (0..255); the sprite buffer is in frame
-		// coordinates, so the paper's left edge is at BorderOffsetX. A pixel
-		// is transparent when it is the 0 "uncovered" sentinel OR equals the
-		// sprite transparency index (NR$4B, default $E3) — the latter is how
-		// 8bpp sprites (e.g. Nextoid's bat/HUD) mark their see-through cells.
-		if idx := spriteScan[x+BorderOffsetX]; idx != 0 && idx != c.spriteTrans {
+		// coordinates, so the paper's left edge is at BorderOffsetX. The
+		// engine skipped the transparent pattern value (NR$4B) itself and
+		// says which pixels it painted; every painted index is a colour.
+		if spriteCovered[x+BorderOffsetX] {
+			idx := spriteScan[x+BorderOffsetX]
 			r, g, b := spritePal.RGB(idx)
 			dst[off+0] = r
 			dst[off+1] = g

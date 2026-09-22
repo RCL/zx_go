@@ -4,7 +4,9 @@
 // 16×16 patterns in 4bpp or 8bpp, X / Y (9-bit) / palette-offset /
 // visible attributes, X/Y mirror, 90° rotate, scale (1/2/4/8×), and the
 // pattern N6 high bit, all via the 5-byte attribute record. Per-scanline
-// render emits sprite pixels with transparency against palette index 0.
+// render skips the pattern value NextReg $4B names as transparent ($E3 at
+// reset; its low nibble for 4bpp patterns), before the palette offset is
+// applied, and reports the pixels it painted through Covered.
 // Collision detection (the $303B status bit) and anchor groups (composite
 // + unified relative sprites) are modelled. Still deferred: the per-line
 // bandwidth / max-per-line flag.
@@ -56,8 +58,14 @@ type Engine struct {
 	collided bool
 	// lineCovered tracks which display pixels an opaque sprite has
 	// already painted in the current RenderScanline pass, to detect
-	// collisions. Reused across scanlines.
+	// collisions, and tells the compositor which pixels of the line are
+	// sprite at all (Covered). Reused across scanlines.
 	lineCovered []bool
+	// transparent is the pattern value NextReg $4B names as transparent:
+	// an 8bpp pixel equal to it, or a 4bpp pixel equal to its low nibble, is
+	// not drawn (sprites.vhd compares the pattern byte before the palette
+	// offset is added). $E3 at reset.
+	transparent byte
 
 	// overtime latches the max-sprites-per-line flag: the sprite engine ran
 	// out of scanline time before finishing its walk. Sticky like collided,
@@ -143,7 +151,25 @@ func (e *Engine) Clip() (x1, x2, y1, y2 byte, set bool) {
 // T-state, four master clocks per column.
 const DefaultLineClockBudget = 228 * 8
 
-func New() *Engine { return &Engine{clocksPerLine: DefaultLineClockBudget} }
+func New() *Engine {
+	return &Engine{clocksPerLine: DefaultLineClockBudget, transparent: DefaultTransparent}
+}
+
+// DefaultTransparent is the reset value of NextReg $4B.
+const DefaultTransparent = 0xE3
+
+// SetTransparent installs the pattern value NextReg $4B names as
+// transparent. 4bpp patterns compare their nibble with its low nibble.
+func (e *Engine) SetTransparent(v byte) { e.transparent = v }
+
+// Transparent returns the pattern value treated as transparent.
+func (e *Engine) Transparent() byte { return e.transparent }
+
+// Covered reports, for the line RenderScanline last drew, which display
+// pixels a sprite painted: index 0 in dst is a real colour, so this is the
+// sprite layer's pixel-enable plane. Valid until the next RenderScanline;
+// nil before the first.
+func (e *Engine) Covered() []bool { return e.lineCovered }
 
 // SetEnabled toggles the sprite layer.
 func (e *Engine) SetEnabled(on bool) { e.enabled = on }
@@ -478,6 +504,16 @@ func (e *Engine) RenderScanline(y int, dst []byte, width int) {
 	// over-border OFF the window is shifted into the paper area, so the whole
 	// top-border band (Y<32 of the 320x256 frame) is hidden. The extra
 	// "y<224" gate matches the FPGA's (over_border or vcounter<224) term.
+	// Reset the per-line coverage map (collision detection, and the layer's
+	// pixel-enable plane for the compositor); the collided flag itself is
+	// sticky across the frame until the status port reads it.
+	if cap(e.lineCovered) < width {
+		e.lineCovered = make([]bool, width)
+	}
+	e.lineCovered = e.lineCovered[:width]
+	for i := range e.lineCovered {
+		e.lineCovered[i] = false
+	}
 	clipXs, clipXe := 0, width-1
 	if e.clipSet {
 		xs, xe, ys, ye := e.effectiveClip()
@@ -485,15 +521,6 @@ func (e *Engine) RenderScanline(y int, dst []byte, width int) {
 			return
 		}
 		clipXs, clipXe = xs, xe
-	}
-	// Reset the per-line coverage map (collision detection); the collided
-	// flag itself is sticky across the frame until the status port reads it.
-	if cap(e.lineCovered) < width {
-		e.lineCovered = make([]bool, width)
-	}
-	e.lineCovered = e.lineCovered[:width]
-	for i := range e.lineCovered {
-		e.lineCovered[i] = false
 	}
 	// Per-line time budget, mirroring the FPGA state machine: one master
 	// clock to enter the walk, one per sprite examined (S_QUALIFY), and one
@@ -612,7 +639,7 @@ func (e *Engine) RenderScanline(y int, dst []byte, width int) {
 			// 8bpp: the offset is added to the byte's high nibble.
 			if eightBit {
 				idx := e.pattern[base+tr*16+tc]
-				if idx == 0 {
+				if idx == e.transparent {
 					continue // transparent
 				}
 				// zero-on-top (NR$15 bit 6): a pixel already painted by a
@@ -629,7 +656,7 @@ func (e *Engine) RenderScanline(y int, dst []byte, width int) {
 				} else {
 					idx = pix & 0x0F
 				}
-				if idx == 0 {
+				if idx == e.transparent&0x0F {
 					continue // transparent
 				}
 				if !e.zeroOnTop || !e.lineCovered[sx] {

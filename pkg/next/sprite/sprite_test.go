@@ -135,9 +135,10 @@ func TestRenderScanlineSimpleSprite(t *testing.T) {
 }
 
 func TestRenderScanlineTransparencyIsIndexZero(t *testing.T) {
-	// Pattern of all-0 nibbles = fully transparent.
+	// With NR$4B = 0 a pattern of all-0 nibbles is fully transparent.
 	e := New()
 	e.SetEnabled(true)
+	e.SetTransparent(0)
 	// All zeros (default); just place a sprite.
 	e.Set(0, Attr{X: 0, Y: 0, Pattern: 0, Palette: 5, Visible: true})
 
@@ -489,7 +490,8 @@ func TestSprite4bppPatternAddressing(t *testing.T) {
 	// Upload one byte to slot 2, half 1 via the real port protocol:
 	// $303B = bit7(half) | slot -> cursor slot*256 + 128 = 640.
 	e.SelectSlot(0x80 | 2)
-	e.WritePatternByte(0x10) // high nibble 1 (opaque), low nibble 0 (transparent)
+	e.WritePatternByte(0x10) // high nibble 1 (opaque), low nibble 0 (transparent with NR$4B = 0)
+	e.SetTransparent(0)
 
 	// A 4bpp sprite (byte4 bit7=1) referencing pattern slot 2 with N6=1.
 	e.Set(0, Attr{X: 0, Y: 0, Pattern: 2, Visible: true, Extended: true, Byte4: 0xC0})
@@ -609,5 +611,79 @@ func TestNonExtendedSpriteIs8bpp(t *testing.T) {
 	e.RenderScanline(0, dst, 320)
 	if dst[0] != 0x2A {
 		t.Errorf("non-extended sprite must be 8bpp: dst[0]=$%02X, want $2A (the raw pattern byte)", dst[0])
+	}
+}
+
+// TestRenderScanlineTransparentIsNR4B: the pattern value NR$4B names is the
+// transparent one, $E3 at reset, compared before the palette offset is
+// added; a 4bpp pattern compares its nibble with the low nibble ($3). Index
+// 0 is an ordinary colour, and Covered says which pixels were painted.
+func TestRenderScanlineTransparentIsNR4B(t *testing.T) {
+	e := New()
+	e.SetEnabled(true)
+	// 8bpp slot 0: row 0 = E3, 00, 12, E3, then E3s
+	e.SetPatternAddr(0)
+	for i := 0; i < 256; i++ {
+		v := byte(0xE3)
+		switch i {
+		case 1:
+			v = 0x00
+		case 2:
+			v = 0x12
+		}
+		e.WritePatternByte(v)
+	}
+	e.Set(0, Attr{X: 0, Y: 0, Pattern: 0, Palette: 1, Visible: true})
+	dst := make([]byte, 64)
+	for i := range dst {
+		dst[i] = 0xAA
+	}
+	e.RenderScanline(0, dst, 64)
+	covered := e.Covered()
+	if dst[0] != 0xAA || covered[0] {
+		t.Errorf("E3 is transparent: dst[0] = %#x covered %v", dst[0], covered[0])
+	}
+	if dst[1] != 0x10 || !covered[1] {
+		t.Errorf("index 0 is a colour (offset 1 -> $10): dst[1] = %#x covered %v", dst[1], covered[1])
+	}
+	if dst[2] != 0x22 || !covered[2] {
+		t.Errorf("$12 with offset 1 -> $22: dst[2] = %#x covered %v", dst[2], covered[2])
+	}
+	if dst[3] != 0xAA || covered[3] {
+		t.Errorf("E3 is transparent whatever the offset: dst[3] = %#x", dst[3])
+	}
+	// 4bpp slot 2 (first half): row 0 nibbles 3, 0, 7, 3
+	e.SetPatternAddr(512)
+	e.WritePatternByte(0x30)
+	e.WritePatternByte(0x73)
+	for i := 2; i < 128; i++ {
+		e.WritePatternByte(0x33)
+	}
+	e.Set(0, Attr{X: 0, Y: 0, Pattern: 2, Palette: 2, Visible: true, Extended: true, Byte4: 0x80})
+	for i := range dst {
+		dst[i] = 0xAA
+	}
+	e.RenderScanline(0, dst, 64)
+	covered = e.Covered()
+	want := []struct {
+		v       byte
+		painted bool
+	}{{0xAA, false}, {0x20, true}, {0x27, true}, {0xAA, false}}
+	for x, w := range want {
+		if dst[x] != w.v || covered[x] != w.painted {
+			t.Errorf("4bpp x=%d: dst %#x covered %v, want %#x %v", x, dst[x], covered[x], w.v, w.painted)
+		}
+	}
+	// a different NR$4B moves the transparent value
+	e.SetTransparent(0x07)
+	for i := range dst {
+		dst[i] = 0xAA
+	}
+	e.RenderScanline(0, dst, 64)
+	if dst[2] != 0xAA || e.Covered()[2] {
+		t.Errorf("nibble 7 is transparent with NR$4B = $07: dst[2] = %#x", dst[2])
+	}
+	if dst[0] != 0x23 || !e.Covered()[0] {
+		t.Errorf("nibble 3 is a colour with NR$4B = $07: dst[0] = %#x", dst[0])
 	}
 }

@@ -45,13 +45,13 @@ func loadSpriteGolden(t *testing.T) map[[2]int]int {
 // Scenario (8bpp, pattern slot 0 = the identity pattern byte[i]=i, over-border
 // on): four 16x16 sprites at Y=48 exercising position, X-mirror, Y-mirror,
 // palette offset and transparency. The golden was produced with the FPGA's
-// transp_colour set to 0 — matching ours' engine model, where palette index 0
-// is transparent (RenderScanline). (The configurable NR$4B transp_colour is a
-// known engine-level gap modelled at the compositor, not exercised here.)
+// transp_colour set to 0, so the engine is told the same (NR$4B = 0; the
+// reset value is $E3).
 func TestSpriteRenderMatchesFPGAGolden(t *testing.T) {
 	e := New()
 	e.SetEnabled(true)
 	e.SetOverBorder(true)
+	e.SetTransparent(0)
 
 	// pattern slot 0: the identity pattern (byte i = i), 8bpp.
 	e.SetPatternAddr(0)
