@@ -635,6 +635,10 @@ func (c *Compositor) composePixels(r *rowLayers, x0, x1 int) {
 	if c.prioritySource != nil {
 		mode = c.prioritySource.Mode()
 	}
+	if mode < ModeBlend {
+		c.composePixelsPlain(r, x0, x1, mode)
+		return
+	}
 	// paintULA / paintL2 / paintSprites are functors that, given
 	// the dst offset, overlay that layer's pixel if non-transparent.
 	paintULA := func(off int) {
@@ -934,6 +938,102 @@ func (c *Compositor) composePixels(r *rowLayers, x0, x1 int) {
 			paintULAStencil(off)
 			paintTilemapOnULA(off, x)
 			paintL2Priority(off, x)
+		}
+	}
+}
+
+// composePixelsPlain is composePixels for the six plain orders (everything
+// but the blend modes), written out without the per-pixel closures: with
+// the whole frame composed a row at a time (ComposeFrameRow) the closures'
+// call overhead was most of a frame's cost. Each pixel's layer colours and
+// opacities are found once, then painted in the mode's order, the same
+// order as the general path's switch.
+func (c *Compositor) composePixelsPlain(r *rowLayers, x0, x1 int, mode PriorityMode) {
+	ula, dst := r.ulaRGBA, r.dst
+	for x := x0; x < x1; x++ {
+		off := x * 4
+		ulaOpaque := !(c.ulaTransActive && ula[off] == c.ulaTransRGBA[0] && ula[off+1] == c.ulaTransRGBA[1] &&
+			ula[off+2] == c.ulaTransRGBA[2] && ula[off+3] == c.ulaTransRGBA[3])
+		var tmR, tmG, tmB, l2R, l2G, l2B, spR, spG, spB byte
+		tmOpaque, l2Opaque, l2Prio, spOpaque := false, false, false, false
+		if r.tmPal != nil && x < len(r.tmEn) && r.tmEn[x] != 0 {
+			idx := r.tmScan[x]
+			if idx&0x0F != c.tilemapTrans && (x >= len(r.tmBelow) || r.tmBelow[x] == 0) {
+				tmOpaque = true
+				tmR, tmG, tmB = r.tmPal.RGB(idx)
+			}
+		}
+		if r.l2Pal != nil && x < len(r.l2En) && r.l2En[x] != 0 {
+			if idx := r.l2Scan[x]; byte(r.l2Pal.Get(idx)>>1) != c.transparency {
+				l2Opaque = true
+				l2Prio = r.l2Pal.HasPriority(idx)
+				l2R, l2G, l2B = r.l2Pal.RGB(idx)
+			}
+		}
+		if r.spPal != nil && r.spCovered[x+r.spriteX] {
+			spOpaque = true
+			spR, spG, spB = r.spPal.RGB(r.spScan[x+r.spriteX])
+		}
+		// the base: the ULA, or the fallback where it is transparent; then
+		// the tilemap over the ULA
+		if ulaOpaque {
+			dst[off], dst[off+1], dst[off+2], dst[off+3] = ula[off], ula[off+1], ula[off+2], ula[off+3]
+		} else {
+			dst[off], dst[off+1], dst[off+2], dst[off+3] = c.fallback[0], c.fallback[1], c.fallback[2], c.fallback[3]
+		}
+		if tmOpaque {
+			dst[off], dst[off+1], dst[off+2], dst[off+3] = tmR, tmG, tmB, 0xFF
+		}
+		paintL2 := func() {
+			if l2Opaque {
+				dst[off], dst[off+1], dst[off+2], dst[off+3] = l2R, l2G, l2B, 0xFF
+			}
+		}
+		paintL2Priority := func() {
+			if l2Opaque && l2Prio {
+				dst[off], dst[off+1], dst[off+2], dst[off+3] = l2R, l2G, l2B, 0xFF
+			}
+		}
+		paintSprites := func() {
+			if spOpaque {
+				dst[off], dst[off+1], dst[off+2], dst[off+3] = spR, spG, spB, 0xFF
+			}
+		}
+		// the ULA and the tilemap again, as a stencil over what is below
+		paintULAStencil := func() {
+			if ulaOpaque {
+				dst[off], dst[off+1], dst[off+2], dst[off+3] = ula[off], ula[off+1], ula[off+2], ula[off+3]
+			}
+			if tmOpaque {
+				dst[off], dst[off+1], dst[off+2], dst[off+3] = tmR, tmG, tmB, 0xFF
+			}
+		}
+		switch mode {
+		case ModeSLU: // Sprites over Layer 2 over ULA+TM
+			paintL2()
+			paintSprites()
+		case ModeLSU: // Layer 2 over Sprites over ULA+TM
+			paintSprites()
+			paintL2()
+		case ModeSUL: // Sprites over ULA+TM over Layer 2
+			paintL2()
+			paintULAStencil()
+			paintL2Priority()
+			paintSprites()
+		case ModeLUS: // Layer 2 over ULA+TM over Sprites
+			paintSprites()
+			paintULAStencil()
+			paintL2()
+		case ModeUSL: // ULA+TM over Sprites over Layer 2
+			paintL2()
+			paintSprites()
+			paintULAStencil()
+			paintL2Priority()
+		case ModeULS: // ULA+TM over Layer 2 over Sprites
+			paintSprites()
+			paintL2()
+			paintULAStencil()
+			paintL2Priority()
 		}
 	}
 }

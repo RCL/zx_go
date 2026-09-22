@@ -66,6 +66,7 @@ func main() {
 			_ = os.WriteFile(filepath.Join(folder, name), content, 0o644)
 		}
 	}
+	stop := startProfile()
 	began := time.Now()
 	for done := 0; done < count; done++ {
 		if t, ok := taps[done]; ok {
@@ -78,6 +79,7 @@ func main() {
 		m.ula.RenderAudioFrame()
 		m.ula.Render()
 	}
+	stop()
 	fmt.Printf("%d frames in %v, PC %04x, SP %04x\n", count, time.Since(began), m.cpu.PC, m.cpu.SP)
 	img := m.ula.Render()
 	out, err := os.Create(os.Args[3])

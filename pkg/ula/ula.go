@@ -896,11 +896,15 @@ func (u *ULA) render() *image.RGBA {
 	// transparent regardless of NR$14 (which sonic sets >= 16, disabling
 	// the per-pixel transparency path).
 	if u.ulaOutputDisabled {
+		// One row of the fill, then copies: image.Set boxes the colour on
+		// every call, 76,800 allocations a frame.
 		fill := u.ulaDisabledFill()
-		for y := 0; y < TotalHeight; y++ {
-			for x := 0; x < TotalWidth; x++ {
-				u.img.Set(x, y, fill)
-			}
+		pix := u.img.Pix
+		for x := 0; x < TotalWidth*4; x += 4 {
+			pix[x], pix[x+1], pix[x+2], pix[x+3] = fill.R, fill.G, fill.B, fill.A
+		}
+		for y := 1; y < TotalHeight; y++ {
+			copy(pix[y*u.img.Stride:y*u.img.Stride+TotalWidth*4], pix[:TotalWidth*4])
 		}
 		if u.nextCompositor != nil {
 			if u.wantsFrameRender() {
