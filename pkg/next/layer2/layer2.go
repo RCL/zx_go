@@ -414,6 +414,31 @@ func (l *Layer2) RenderScanlineEnabled(y int, dst, en []byte) {
 		return
 	}
 
+	// Fast path: 320x256, no scroll, identity offset, the row unclipped.
+	// The frame is stored a column at a time (byte x*256+y), 64 columns to
+	// a 16K bank, so a row is one byte from each of 320 columns; the same
+	// bytes the faithful path below would fetch one address computation
+	// at a time. The clip window's X is in pairs of pixels here.
+	if l.resolution == 1 && l.scrollX == 0 && l.scrollY == 0 && l.paletteOffset == 0 &&
+		l.clipX1 == 0x00 && l.clipX2 >= 0x9F && y >= int(l.clipY1) && y <= int(l.clipY2) {
+		for x := 0; x < w; x += 64 {
+			page := l.mem.GetPage(int(l.activeBank) + x>>6)
+			if len(page) < 0x4000 {
+				for i := x; i < x+64; i++ {
+					dst[i] = 0
+				}
+				continue
+			}
+			for i := 0; i < 64; i++ {
+				dst[x+i] = page[i<<8|y]
+			}
+		}
+		for i := 0; i < w && i < len(en); i++ {
+			en[i] = 1
+		}
+		return
+	}
+
 	// Faithful path: per displayed column, compute the FPGA framebuffer byte
 	// and pixel. In 640 mode two pixels share one byte (high/low nibble).
 	hires4 := l.resolution&0x02 != 0

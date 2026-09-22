@@ -184,3 +184,40 @@ func TestLayer2_PaletteOffset640(t *testing.T) {
 		t.Errorf("640 offset 3: dst[0,1]=%#x,%#x, want 0x3A,0x3B", dst[0], dst[1])
 	}
 }
+
+// The 320x256 fast path (no scroll, no offset, unclipped) fetches the same
+// bytes the per-pixel path does: column x, row y is byte x*256+y of the
+// frame, 64 columns to a bank. The rows a clip window or a scroll touch go
+// the slow way and agree.
+func TestRenderScanline320FastPathMatchesFaithful(t *testing.T) {
+	mem := &fakeBanks{}
+	for b := 0; b < 5; b++ {
+		for i := range mem.banks[b] {
+			mem.banks[b][i] = byte((b*7 + i*13) ^ (i >> 8))
+		}
+	}
+	banks := mem.banks[:]
+	l := New(mem)
+	l.SetActiveBank(0)
+	l.SetResolution(1)
+	l.SetClip(0, 159, 0, 255)
+	l.SetEnabled(true)
+	fast := make([]byte, 320)
+	en := make([]byte, 320)
+	for _, y := range []int{0, 1, 100, 255} {
+		l.RenderScanlineEnabled(y, fast, en)
+		for x := 0; x < 320; x++ {
+			want := banks[x>>6][(x&63)<<8|y]
+			if fast[x] != want || en[x] != 1 {
+				t.Fatalf("y %d x %d: got %#x en %d, want %#x", y, x, fast[x], en[x], want)
+			}
+		}
+	}
+	// scrolled: the slow path, and a different row
+	l.SetScrollY(1)
+	slow := make([]byte, 320)
+	l.RenderScanlineEnabled(10, slow, en)
+	if slow[5] != banks[0][5<<8|11] {
+		t.Errorf("scrolled row 10 reads row 11: got %#x want %#x", slow[5], banks[0][5<<8|11])
+	}
+}
