@@ -903,6 +903,9 @@ func (u *ULA) render() *image.RGBA {
 			}
 		}
 		if u.nextCompositor != nil {
+			if u.wantsFrameRender() {
+				return u.renderNextFrame()
+			}
 			u.applyNextCompositor()
 			if u.nextCompositor.HiResLayer2Active() {
 				return u.renderHiResLayer2()
@@ -994,10 +997,15 @@ func (u *ULA) render() *image.RGBA {
 	// Layer 2 data internally; we just hand it the existing ULA
 	// scanline and write the result back.
 	if u.nextCompositor != nil {
+		if u.wantsFrameRender() {
+			// Layer 2 at 320x256: every layer reaches every pixel, so the
+			// whole frame is composed a row at a time in NextReg 0x15 order.
+			return u.renderNextFrame()
+		}
 		u.applyNextCompositor()
 		if u.nextCompositor.HiResLayer2Active() {
-			// Layer 2 in 320×256 / 640×256 hi-res mode spans the full
-			// display width; composite it over the base frame.
+			// Layer 2 in 640×256 hi-res mode spans the full display
+			// width; composite it over the base frame.
 			return u.renderHiResLayer2()
 		}
 		if u.nextCompositor.TilemapIs80Col() {

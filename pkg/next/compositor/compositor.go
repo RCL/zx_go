@@ -130,6 +130,8 @@ type Compositor struct {
 	l2Scratch      [Width]byte
 	l2Enabled      [Width]byte     // per-pixel layer2_en plane for the same row
 	spriteScratch  [FullWidth]byte // full 320-wide row in FRAME coordinates (sprite X/Y are frame-relative; paper starts at 32,32)
+	frameL2Scratch [FullWidth]byte // a Layer 2 row of the whole frame (ComposeFrameRow)
+	frameL2Enabled [FullWidth]byte
 	tilemapScratch [FullWidth]byte // sized for full 320-wide row; ComposeScanline takes the centred 256 pixels
 	tilemapEn      [FullWidth]byte // per-pixel pixel_en_s plane for the same row
 	tilemapBelow   [FullWidth]byte // per-pixel pixel_below_o plane for the same row
@@ -520,6 +522,7 @@ func (c *Compositor) ComposeScanlineRange(y int, ulaRGBA []byte, dst []byte, x0,
 	}
 
 	// Pre-fetch active layers' scanlines + their palettes.
+	r := rowLayers{ulaRGBA: ulaRGBA, dst: dst, spriteX: BorderOffsetX}
 	var l2Scanline []byte
 	var l2Enabled []byte
 	var l2Pal *palette.Palette
@@ -536,6 +539,7 @@ func (c *Compositor) ComposeScanlineRange(y int, ulaRGBA []byte, dst []byte, x0,
 			l2Scanline = c.l2Scratch[:]
 			l2Enabled = c.l2Enabled[:]
 			c.l2.RenderScanlineEnabled(y, l2Scanline, l2Enabled)
+			r.l2Scan, r.l2En, r.l2Pal = l2Scanline, l2Enabled, l2Pal
 		}
 	}
 	var tilemapScan []byte
@@ -569,6 +573,7 @@ func (c *Compositor) ComposeScanlineRange(y int, ulaRGBA []byte, dst []byte, x0,
 			tilemapScan = c.tilemapScratch[BorderOffsetX : BorderOffsetX+Width]
 			tilemapEn = c.tilemapEn[BorderOffsetX : BorderOffsetX+Width]
 			tilemapBelow = c.tilemapBelow[BorderOffsetX : BorderOffsetX+Width]
+			r.tmScan, r.tmEn, r.tmBelow, r.tmPal = tilemapScan, tilemapEn, tilemapBelow, tilemapPal
 		}
 	}
 	var spriteScan []byte
@@ -591,12 +596,41 @@ func (c *Compositor) ComposeScanlineRange(y int, ulaRGBA []byte, dst []byte, x0,
 			// available; paintSprites reads [paperX+BorderOffsetX].
 			c.sprites.RenderScanline(y+SpriteFrameYTop, spriteScan, FullWidth)
 			spriteCovered = c.sprites.Covered()
+			r.spScan, r.spCovered, r.spPal = spriteScan, spriteCovered, spritePal
 		}
 	}
 
 	// Decode the active priority mode. Each mode dictates the
 	// painting order top-down: the LAST one written wins per pixel.
 	// We always paint background-to-foreground.
+	c.composePixels(&r, x0, x1)
+}
+
+// rowLayers is one row of every layer, gathered for composePixels: the ULA
+// row (RGBA), the destination, and each Next layer's indices, enables and
+// palette, indexed by the row's x (the sprites by x+spriteX). A nil palette
+// is a layer that does not take part.
+type rowLayers struct {
+	ulaRGBA, dst          []byte
+	l2Scan, l2En          []byte
+	l2Pal                 *palette.Palette
+	tmScan, tmEn, tmBelow []byte
+	tmPal                 *palette.Palette
+	spScan                []byte
+	spCovered             []bool
+	spPal                 *palette.Palette
+	spriteX               int
+}
+
+// composePixels paints x0..x1 of a row from its gathered layers in the order
+// NextReg 0x15 asks for, blend modes included. Shared by the paper row
+// compose (ComposeScanlineRange) and the whole-frame row (ComposeFrameRow).
+func (c *Compositor) composePixels(r *rowLayers, x0, x1 int) {
+	doL2, doTilemap, doSprites := r.l2Pal != nil, r.tmPal != nil, r.spPal != nil
+	ulaRGBA, dst := r.ulaRGBA, r.dst
+	l2Scanline, l2Enabled, l2Pal := r.l2Scan, r.l2En, r.l2Pal
+	tilemapScan, tilemapEn, tilemapBelow, tilemapPal := r.tmScan, r.tmEn, r.tmBelow, r.tmPal
+	spriteScan, spriteCovered, spritePal := r.spScan, r.spCovered, r.spPal
 	mode := ModeSLU
 	if c.prioritySource != nil {
 		mode = c.prioritySource.Mode()
@@ -681,11 +715,11 @@ func (c *Compositor) ComposeScanlineRange(y int, ulaRGBA []byte, dst []byte, x0,
 			return
 		}
 		// x is the paper pixel (0..255); the sprite buffer is in frame
-		// coordinates, so the paper's left edge is at BorderOffsetX. The
+		// coordinates, so the row's left edge is at spriteX (the paper's is at BorderOffsetX). The
 		// engine skipped the transparent pattern value (NR$4B) itself and
 		// says which pixels it painted; every painted index is a colour.
-		if spriteCovered[x+BorderOffsetX] {
-			idx := spriteScan[x+BorderOffsetX]
+		if spriteCovered[x+r.spriteX] {
+			idx := spriteScan[x+r.spriteX]
 			r, g, b := spritePal.RGB(idx)
 			dst[off+0] = r
 			dst[off+1] = g
