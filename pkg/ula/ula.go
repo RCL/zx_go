@@ -200,6 +200,12 @@ type ULA struct {
 	lastImg                *image.RGBA
 	frameStartSpeakerState bool
 
+	// captureAudio records the beeper, DAC and tape events even without an
+	// oto sink (audio == nil), for a host that pulls finished frames itself
+	// through RenderAudioFrame: a WebAssembly page, say, which has no audio
+	// device of its own. Native hosts leave it false.
+	captureAudio bool
+
 	// dc models the capacitor-coupled audio output: it high-pass-filters the
 	// per-frame mix so a held speaker level decays to silence instead of
 	// sitting at a full-scale DC rail (which made power-on/reset/tape
@@ -1844,7 +1850,7 @@ func (u *ULA) writePortInternal(addr uint16, val byte) {
 	// and $FB. An add-on the user has explicitly enabled wins the port;
 	// the internal bank picks it up otherwise.
 	if u.speccyDAC != nil && u.speccyDAC.Handles(byte(addr&0xFF)) {
-		if u.audio != nil && u.mem.TStates != nil {
+		if u.audioActive() && u.mem.TStates != nil {
 			u.speccyDAC.Record(int(*u.mem.TStates-u.frameStartTstate), val)
 		}
 		return
@@ -1859,7 +1865,7 @@ func (u *ULA) writePortInternal(addr uint16, val byte) {
 	if u.nextDAC != nil && u.nextDAC.WritePort(addr, val) {
 		// Record the timed write so the frame can reconstruct the DAC
 		// waveform sample-accurately (event-timed, like the beeper).
-		if u.audio != nil && u.mem.TStates != nil {
+		if u.audioActive() && u.mem.TStates != nil {
 			u.nextDAC.Record(int(*u.mem.TStates - u.frameStartTstate))
 		}
 		return
@@ -1898,7 +1904,7 @@ func (u *ULA) writePortInternal(addr uint16, val byte) {
 		newSpeakerState := (val & 0x10) != 0
 		if newSpeakerState != u.Speaker {
 			u.Speaker = newSpeakerState
-			if u.audio != nil && u.mem.TStates != nil {
+			if u.audioActive() && u.mem.TStates != nil {
 				offset := int(*u.mem.TStates - u.frameStartTstate)
 				u.audioEvents = append(u.audioEvents, audioEvent{
 					tstateOffset: offset,
@@ -2343,7 +2349,7 @@ func (u *ULA) tapeLevel() bool {
 	}
 	u.lastTapeTstate = now
 	// Record EAR transitions so flushAudioFrame can reproduce the loading sound.
-	if u.audio != nil && playing && u.TapeIn != prev {
+	if u.audioActive() && playing && u.TapeIn != prev {
 		if off := int(now - u.frameStartTstate); off >= 0 && off < u.audioFrameTStates() {
 			u.tapeAudioEvents = append(u.tapeAudioEvents, audioEvent{tstateOffset: off, state: u.TapeIn})
 		}
@@ -2459,6 +2465,48 @@ func (u *ULA) flushAudioFrame() {
 	if u.mem.TStates != nil {
 		u.frameStartTstate = *u.mem.TStates
 	}
+}
+
+// audioActive reports whether audio events are being recorded: for an oto
+// sink, or for a host that pulls frames through RenderAudioFrame.
+func (u *ULA) audioActive() bool { return u.audio != nil || u.captureAudio }
+
+// EnableAudioCapture records audio events without an oto sink, so a host
+// without an audio device (a browser page, say) can pull each finished
+// frame with RenderAudioFrame. Without it, flushAudioFrame drops the events
+// unheard when audio == nil.
+func (u *ULA) EnableAudioCapture() { u.captureAudio = true }
+
+// RenderAudioFrame synthesises the just-finished frame's audio, mixed the
+// way the oto path mixes it (beeper, DACs, tape, then the active AY), and
+// returns it as interleaved stereo int16 at audio.SampleRate:
+// audio.SamplesPerFrame frames, so 2*SamplesPerFrame values. It resets the
+// per-frame event state, as flushAudioFrame does; call it once per frame
+// after Render. Silent while fast-tape loading, like the oto path.
+func (u *ULA) RenderAudioFrame() []int16 {
+	if u.fastLoad {
+		u.audioEvents = u.audioEvents[:0]
+		u.tapeAudioEvents = u.tapeAudioEvents[:0]
+		u.frameStartTapeState = false
+		u.frameStartSpeakerState = u.Speaker
+		u.dc.Reset()
+		if u.mem.TStates != nil {
+			u.frameStartTstate = *u.mem.TStates
+		}
+		return make([]int16, 2*audio.SamplesPerFrame)
+	}
+	frame := u.mixAudioFrame()
+	if u.mem.TStates != nil {
+		u.frameStartTstate = *u.mem.TStates
+	}
+	// The AY generates at audio rate from its own counters, so a synchronous
+	// per-frame mix is exact. The Next's engine covers chip 0 too.
+	if u.nextAY != nil {
+		u.nextAY.MixIntoStereo(frame)
+	} else if u.ay != nil {
+		u.ay.MixIntoStereo(frame)
+	}
+	return frame
 }
 
 // audioFrameTStates is the length of one ULA frame in the units the audio
