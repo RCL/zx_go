@@ -562,8 +562,10 @@ func (c *Compositor) ComposeScanlineRange(y int, ulaRGBA []byte, dst []byte, x0,
 			// image col 0). See sram_pre_layer2_A21_A13 / FPGA
 			// 320-pixel video framing — tilemap is anchored to the
 			// full screen including the 32-px border, not to the
-			// inner 256-wide rectangle.
-			c.tilemap.RenderScanlineFlags(y, c.tilemapScratch[:], c.tilemapEn[:], c.tilemapBelow[:])
+			// inner 256-wide rectangle. Rows likewise: the tilemap's
+			// row 0 is the top of the 320x256 frame, so paper row y
+			// is tilemap row y+SpriteFrameYTop, as for the sprites.
+			c.tilemap.RenderScanlineFlags(y+SpriteFrameYTop, c.tilemapScratch[:], c.tilemapEn[:], c.tilemapBelow[:])
 			tilemapScan = c.tilemapScratch[BorderOffsetX : BorderOffsetX+Width]
 			tilemapEn = c.tilemapEn[BorderOffsetX : BorderOffsetX+Width]
 			tilemapBelow = c.tilemapBelow[BorderOffsetX : BorderOffsetX+Width]

@@ -1105,7 +1105,7 @@ func (u *ULA) renderWide() *image.RGBA {
 				rowWide[d+4], rowWide[d+5], rowWide[d+6], rowWide[d+7] = r, g, b, a
 			}
 		}
-		u.nextCompositor.ComposeWideTilemapRow(y, rowWide)
+		u.nextCompositor.ComposeWideTilemapRow(y+(256-TotalHeight)/2, rowWide) // image row to frame row
 		dstStart := y * wide.Stride
 		copy(wide.Pix[dstStart:dstStart+ww*4], rowWide)
 	}
@@ -2180,11 +2180,10 @@ func (u *ULA) applyNextCompositor() {
 		for y := 0; y < TotalHeight; y++ {
 			imgRowStart := y * u.img.Stride
 			copy(rowFull, u.img.Pix[imgRowStart:imgRowStart+TotalWidth*4])
-			// Tilemap y origin = top of image (y=0). The tilemap
-			// itself is 256 lines tall; rows 0..239 of the image
-			// map to tilemap rows 0..239 (the bottom 16 rows of
-			// the 256-line tilemap are cropped out of the 240-line
-			// image).
+			// The tilemap is 256 lines tall, its row 0 the top of
+			// the 320x256 frame; this 240-line image is the middle of
+			// that frame, so image row y is tilemap row y+8 (the 8
+			// rows above and below are the over-border strips).
 			inBorder := func(x int) bool {
 				return x < BorderLeft || x >= BorderLeft+ScreenWidth
 			}
@@ -2193,7 +2192,7 @@ func (u *ULA) applyNextCompositor() {
 				// border, paint the whole row.
 				inBorder = func(int) bool { return true }
 			}
-			u.nextCompositor.ComposeBorderRow(y, rowFull, inBorder)
+			u.nextCompositor.ComposeBorderRow(y+(256-TotalHeight)/2, rowFull, inBorder)
 			copy(u.img.Pix[imgRowStart:imgRowStart+TotalWidth*4], rowFull)
 		}
 	}
