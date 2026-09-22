@@ -862,6 +862,25 @@ func (c *CPU) ExecuteFrame(tstatesPerFrame int) {
 		lineIntAt = frameStart + off
 	}
 	c.lineIntFired = false
+	// While halted nothing but the clock moves, and the loop's only
+	// observers are the time-based interrupt points and the flags others
+	// set from outside; so a halted CPU may take several M1 cycles at a
+	// stroke, as long as it stops at the next of those points.
+	var haltUntil uint64
+	{
+		haltUntil = tstatesEnd
+		if narrowPulse && !c.FrameIntDisabled {
+			assertAt := frameStart + c.IntAssertTstate*uint64(c.SpeedMultiplier())
+			for _, at := range []uint64{assertAt, assertAt + c.IntPulseTstates} {
+				if at > c.tstates && at < haltUntil {
+					haltUntil = at
+				}
+			}
+		}
+		if lineIntAt > c.tstates && lineIntAt < haltUntil {
+			haltUntil = lineIntAt
+		}
+	}
 
 	for c.tstates < tstatesEnd {
 		// Narrow-pulse frame INT: raise at the pulse start, withdraw once
@@ -918,7 +937,15 @@ func (c *CPU) ExecuteFrame(tstatesPerFrame int) {
 			// A halted Z80 issues an M1 cycle for the HALT opcode every 4
 			// T-states, and every M1 bumps R (Sean Young §5). Matches the
 			// other three execution loops; see halt_refresh_paths_test.go.
-			c.haltTick()
+			// Up to haltIdleCycles of them at once, short of the next
+			// interrupt point, since nothing else changes meanwhile.
+			cycles := 1
+			if c.tstates+4*haltIdleCycles <= haltUntil {
+				cycles = haltIdleCycles
+			}
+			for i := 0; i < cycles; i++ {
+				c.haltTick()
+			}
 			continue
 		}
 		if c.BreakpointCheck != nil && c.BreakpointCheck(c.PC) {
@@ -1159,6 +1186,10 @@ func (c *CPU) StepInstruction() {
 // /INT from R bit 6 so their display loop only wakes because R keeps counting.
 // All four execution loops route their halted step through here so they cannot
 // drift apart again.
+// haltIdleCycles is how many HALT M1 cycles ExecuteFrame takes at a stroke
+// while nothing can happen: 16 T-states, under the narrowest INT pulse.
+const haltIdleCycles = 4
+
 func (c *CPU) haltTick() {
 	c.R = (c.R & 0x80) | ((c.R + 1) & 0x7F)
 	c.tstates += 4
