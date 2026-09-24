@@ -541,7 +541,10 @@ func (u *ULA) SetNextRegs(n NextRegAccess) { u.nextRegs = n }
 // scanline compositor. Once installed, Render overlays the
 // composited output on top of the 256x192 active display region.
 // Passing nil restores the plain-ULA render.
-func (u *ULA) SetNextCompositor(c NextCompositor) { u.nextCompositor = c }
+func (u *ULA) SetNextCompositor(c NextCompositor) {
+	u.nextCompositor = c
+	u.SetULAOutputDisabled(u.ulaOutputDisabled)
+}
 
 // Palette returns the ULA's 16-colour palette. The Next compositor uses it
 // to resolve the ULA transparency colour: the classic ULA renders via this
@@ -784,7 +787,12 @@ func (u *ULA) SetBorderTracer(fn func(port uint16, val byte, newBorder byte, sca
 
 // SetULAOutputDisabled mirrors NextReg $68 bit 7. When true the ULA layer is
 // not painted (see Render). Idempotent and safe to call every frame.
-func (u *ULA) SetULAOutputDisabled(disabled bool) { u.ulaOutputDisabled = disabled }
+func (u *ULA) SetULAOutputDisabled(disabled bool) {
+	u.ulaOutputDisabled = disabled
+	if c, ok := u.nextCompositor.(interface{ SetULAOutputDisabled(bool) }); ok {
+		c.SetULAOutputDisabled(disabled)
+	}
+}
 
 // ulaDisabledFill is the colour painted across the frame when the ULA output
 // is disabled: the Next compositor's NR$4A fallback when one is wired, else
@@ -2392,7 +2400,7 @@ func (u *ULA) Reset() {
 	// scroll offsets ($26/$27) and the $123B read-back shadow, all of
 	// which reset to zero on the FPGA.
 	u.timexVideoMode = 0
-	u.ulaOutputDisabled = false
+	u.SetULAOutputDisabled(false)
 	u.ulaScrollX, u.ulaScrollY = 0, 0
 	u.port123BVal = 0
 	// Clear any per-scanline border changes left in the buffer.

@@ -112,6 +112,7 @@ type Compositor struct {
 	fallback       [4]byte // NR$4A fallback RGBA, shown when every layer is transparent
 	blendMode      byte    // NextReg 0x68 bits 6:5 — blend colour source
 	stencilMode    bool    // NextReg 0x68 bit 0 — ULA/tilemap stencil
+	ulaDisabled    bool    // NextReg 0x68 bit 7; independent of NR$14 colour key
 
 	// ULA transparency: the classic ULA renders via its own 16-colour
 	// palette, so a ULA pixel is "transparent" (lets a lower layer show in
@@ -427,6 +428,11 @@ func (c *Compositor) SetTransparency(idx byte) {
 	c.recomputeULATrans()
 }
 
+// SetULAOutputDisabled gates the ULA contribution without hiding the tilemap.
+// The host still supplies a fallback-filled row when the ULA is off; that
+// fill is a final background, not an opaque ULA pixel above other layers.
+func (c *Compositor) SetULAOutputDisabled(disabled bool) { c.ulaDisabled = disabled }
+
 // SetULAPalette installs the ULA's 16-colour palette so the compositor can
 // resolve the ULA transparency colour (a transparent ULA pixel carries
 // ulaPalette[NR$14]). Until this is called the ULA-transparency features
@@ -647,13 +653,11 @@ func (c *Compositor) composePixels(r *rowLayers, x0, x1 int) {
 		dst[off+2] = ulaRGBA[off+2]
 		dst[off+3] = ulaRGBA[off+3]
 	}
-	// ulaTransparentAt reports whether the ULA pixel at off equals the
-	// global transparency colour (active only when NR$14 < 16 + the ULA
-	// palette is known — see recomputeULATrans). When inactive this is
-	// always false, so paintBase/paintULAStencil collapse to paintULA and
-	// the verified compositing is unchanged.
+	// A disabled ULA contributes nothing, regardless of the colour key.
+	// Otherwise compare the pixel with the global transparency colour
+	// (active only when NR$14 < 16 and the ULA palette is known).
 	ulaTransparentAt := func(off int) bool {
-		return c.ulaTransActive &&
+		return c.ulaDisabled || c.ulaTransActive &&
 			ulaRGBA[off+0] == c.ulaTransRGBA[0] && ulaRGBA[off+1] == c.ulaTransRGBA[1] &&
 			ulaRGBA[off+2] == c.ulaTransRGBA[2] && ulaRGBA[off+3] == c.ulaTransRGBA[3]
 	}
@@ -952,7 +956,7 @@ func (c *Compositor) composePixelsPlain(r *rowLayers, x0, x1 int, mode PriorityM
 	ula, dst := r.ulaRGBA, r.dst
 	for x := x0; x < x1; x++ {
 		off := x * 4
-		ulaOpaque := !(c.ulaTransActive && ula[off] == c.ulaTransRGBA[0] && ula[off+1] == c.ulaTransRGBA[1] &&
+		ulaOpaque := !c.ulaDisabled && !(c.ulaTransActive && ula[off] == c.ulaTransRGBA[0] && ula[off+1] == c.ulaTransRGBA[1] &&
 			ula[off+2] == c.ulaTransRGBA[2] && ula[off+3] == c.ulaTransRGBA[3])
 		var tmR, tmG, tmB, l2R, l2G, l2B, spR, spG, spB byte
 		tmOpaque, l2Opaque, l2Prio, spOpaque := false, false, false, false

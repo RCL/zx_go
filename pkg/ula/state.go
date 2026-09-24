@@ -212,7 +212,7 @@ func (u *ULA) LoadState(b []byte) error {
 	u.KempstonEnabled = s.KempstonEnabled
 	u.KempstonState = s.KempstonState
 
-	u.ulaOutputDisabled = s.ULAOutputDisabled
+	u.SetULAOutputDisabled(s.ULAOutputDisabled)
 	u.ulaScrollX = s.ULAScrollX
 	u.ulaScrollY = s.ULAScrollY
 	u.ulaFineScrollX = s.ULAFineScrollX
